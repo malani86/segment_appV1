@@ -1,0 +1,6 @@
+filename,label,area,equivalent_diameter,centroid-0,centroid-1,area_sqmicron,eq_diam_micron
+"resus 2 uM.tif [slice 1, PNG-style]",1,20.0,5.046265044040321,129.9,163.8,0.8,1.0092530088080642
+"resus 2 uM.tif [slice 1, PNG-style]",2,20.0,5.046265044040321,168.95,437.9,0.8,1.0092530088080642
+"resus 2 uM.tif [slice 1, PNG-style]",3,7.0,2.985410660720923,210.0,400.0,0.28,0.5970821321441846
+"resus 2 uM.tif [slice 1, PNG-style]",4,19.0,4.918490759365935,211.42105263157896,403.7368421052632,0.76,0.983698151873187
+"resus 2 uM.tif [slice 1, PNG-style]",5,20.0,5.046265044040321,375.35,480.7,0.8,1.0092530088080642

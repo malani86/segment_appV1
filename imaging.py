@@ -6,8 +6,7 @@ import numpy as np
 from PIL import Image, ImageSequence
 from PySide6.QtGui import QImage, QPixmap
 
-from app_models import PreviewBundle
-
+from app_models import PreviewBundle, STACK_VIEW_PROJECTION, STACK_VIEW_SLICE
 
 def safe_normalize_to_uint8(img: np.ndarray) -> np.ndarray:
     img = np.asarray(img)
@@ -60,9 +59,11 @@ def _to_preview_gray(arr: np.ndarray) -> np.ndarray:
             return safe_normalize_to_uint8(arr[..., 0])
 
         if arr.shape[-1] >= 3:
-            rgb = safe_normalize_to_uint8(arr[..., :3]).astype(np.float32)
+            rgb = arr[..., :3].astype(np.float32)
+            if rgb.max() > 1.0:
+                rgb = rgb / max(float(rgb.max()), 1.0)
             gray = 0.299 * rgb[..., 0] + 0.587 * rgb[..., 1] + 0.114 * rgb[..., 2]
-            return gray.clip(0, 255).astype(np.uint8)
+            return safe_normalize_to_uint8(gray)
 
         return safe_normalize_to_uint8(np.squeeze(arr))
 
@@ -71,25 +72,7 @@ def _to_preview_gray(arr: np.ndarray) -> np.ndarray:
 
 def _to_preview_image(arr: np.ndarray) -> np.ndarray:
     arr = _as_hw_or_hwc(arr)
-
-    if arr.ndim == 2:
-        return safe_normalize_to_uint8(arr)
-
-    if arr.ndim != 3:
-        raise ValueError(f"Unsupported image shape for preview: {arr.shape}")
-
-    channels = arr.shape[-1]
-    if channels == 1:
-        return safe_normalize_to_uint8(arr[..., 0])
-    if channels == 3:
-        return safe_normalize_to_uint8(arr[..., :3])
-    if channels >= 4:
-        return safe_normalize_to_uint8(arr[..., :4])
-
-    squeezed = np.squeeze(arr)
-    if squeezed.ndim == 2:
-        return safe_normalize_to_uint8(squeezed)
-    raise ValueError(f"Unsupported image shape for preview: {arr.shape}")
+    return _to_preview_gray(arr)
 
 
 def _load_pages_via_pil(path: str) -> list[np.ndarray]:
@@ -108,34 +91,79 @@ def load_preview_bundle(path: str) -> PreviewBundle:
         raise ValueError("No image data found.")
 
     num_pages = len(pages)
-    first = pages[0]
+    preview_pages = [_to_preview_image(page) for page in pages]
+    first = preview_pages[0]
 
     if num_pages == 1:
-        display = _to_preview_image(first)
-        if display.ndim == 2:
+        if first.ndim == 2:
             mode = "single-gray"
         else:
-            mode = f"single-color-{display.shape[-1]}ch"
+            mode = f"single-color-{first.shape[-1]}ch"
         return PreviewBundle(
-            display_image=display,
+            pages=preview_pages,
+            max_projection_image=None,
             num_pages=num_pages,
             source_mode=mode,
+            is_stack=False,
         )
 
-    gray_pages = [_to_preview_gray(page) for page in pages]
+    gray_pages = [_to_preview_gray(page) for page in preview_pages]
     base_shape = gray_pages[0].shape
     if any(page.shape != base_shape for page in gray_pages[1:]):
         raise ValueError("Preview failed: TIFF stack pages do not all share the same 2D shape.")
 
     stack = np.stack([page.astype(np.float32) for page in gray_pages], axis=0)
-    display = safe_normalize_to_uint8(np.max(stack, axis=0))
-    mode = f"z-stack-maxproj-{len(gray_pages)}pages"
+    max_projection = safe_normalize_to_uint8(np.max(stack, axis=0))
+    mode = f"z-stack-{len(gray_pages)}pages"
 
     return PreviewBundle(
-        display_image=display,
+        pages=preview_pages,
+        max_projection_image=max_projection,
         num_pages=num_pages,
         source_mode=mode,
+        is_stack=True,
     )
+
+
+def clamp_slice_index(bundle: PreviewBundle, slice_index: int) -> int:
+    if bundle.num_pages <= 0:
+        return 0
+    return max(0, min(bundle.num_pages - 1, slice_index))
+
+
+def preview_image_from_bundle(
+    bundle: PreviewBundle,
+    *,
+    slice_index: int = 0,
+    stack_view_mode: str = STACK_VIEW_SLICE,
+) -> np.ndarray:
+    if not bundle.pages:
+        raise ValueError("Preview bundle contains no pages.")
+
+    if bundle.is_stack and stack_view_mode == STACK_VIEW_PROJECTION and bundle.max_projection_image is not None:
+        return bundle.max_projection_image
+
+    safe_index = clamp_slice_index(bundle, slice_index)
+    return bundle.pages[safe_index]
+
+
+def preview_pixmap_from_bundle(
+    bundle: PreviewBundle,
+    *,
+    slice_index: int = 0,
+    stack_view_mode: str = STACK_VIEW_SLICE,
+) -> QPixmap:
+    image = preview_image_from_bundle(bundle, slice_index=slice_index, stack_view_mode=stack_view_mode)
+    return numpy_image_to_qpixmap(image)
+
+
+def image_file_to_numpy(path: Path, *, raw: bool = False) -> np.ndarray:
+    if raw:
+        with Image.open(path) as image:
+            return _as_hw_or_hwc(np.array(image))
+
+    bundle = load_preview_bundle(str(path))
+    return preview_image_from_bundle(bundle)
 
 
 def numpy_gray_to_qpixmap(img: np.ndarray) -> QPixmap:
@@ -177,6 +205,13 @@ def numpy_image_to_qpixmap(img: np.ndarray) -> QPixmap:
 def image_file_to_qpixmap(path: Path) -> QPixmap:
     try:
         bundle = load_preview_bundle(str(path))
-        return numpy_image_to_qpixmap(bundle.display_image)
+        return preview_pixmap_from_bundle(bundle)
     except Exception:
         return QPixmap()
+
+
+def image_file_to_qpixmap_raw(path: Path) -> QPixmap:
+    pixmap = QPixmap(str(path))
+    if not pixmap.isNull():
+        return pixmap
+    return image_file_to_qpixmap(path)

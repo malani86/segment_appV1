@@ -1,1 +1,13 @@
-best_UNetDC_focal_model.pth
+
+__pycache__/
+*.pyc
+.env
+venv/
+*.pth
+*.pt
+*.h5
+*.zip
+.ipynb_checkpoints/
+runs/
+outputs/
+predicted_masks/

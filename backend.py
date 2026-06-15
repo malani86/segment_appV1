@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 import csv
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
+from app_models import AppSettings
 from config import SCRIPT_BASENAME, VALID_EXTS
+
+
+def _is_tiff_path(path: Path) -> bool:
+    return path.suffix.lower() in {".tif", ".tiff"}
 
 
 def _resolve_batch_script() -> Path:
@@ -37,37 +44,49 @@ def _resolve_batch_script() -> Path:
 def build_batch_command(
     *,
     input_dir: Path,
-    ckpt_path: Path,
     out_dir: Path,
-    batch_size: int,
-    prob_thresh: float,
-    min_area: int,
-    background_radius: int,
-    px_per_micron: float | None,
-    save_overlays: bool,
-    excel_enabled: bool,
-    histogram_enabled: bool,
+    settings: AppSettings,
+    current_slice_index: int,
+    tiff_png_reference_dir: Path | None = None,
 ) -> list[str]:
     script_path = _resolve_batch_script()
 
     args = ([str(script_path)] if getattr(sys, "frozen", False) else [sys.executable, str(script_path)]) + [
         "--img_dir", str(input_dir),
-        "--ckpt_path", str(ckpt_path),
+        "--ckpt_path", str(settings.checkpoint_path),
         "--out_dir", str(out_dir),
-        "--batch", str(batch_size),
-        "--prob_thresh", str(prob_thresh),
-        "--min_area", str(min_area),
-        "--background_radius", str(background_radius),
+        "--batch", str(settings.batch_size),
+        "--prob_thresh", str(settings.threshold),
+        "--min_area", str(settings.min_area),
+        "--background_radius", str(settings.background_radius),
+        "--resize_size", str(settings.resize_size),
+        "--overlay_alpha", str(settings.overlay_alpha),
+        "--tiff_mode", str(settings.tiff_stack_mode),
+        "--slice_index", str(max(0, current_slice_index)),
     ]
 
-    if px_per_micron is not None and px_per_micron > 0:
-        args.extend(["--px_per_micron", str(px_per_micron)])
-    if save_overlays:
+    if settings.px_per_micron > 0:
+        args.extend(["--px_per_micron", str(settings.px_per_micron)])
+    if settings.save_overlays:
         args.append("--save_overlays")
-    if not excel_enabled:
+    if not settings.save_masks:
+        args.append("--skip_mask_save")
+    if not settings.automatic_quantification:
+        args.append("--skip_quantification")
+    if settings.use_watershed_count:
+        args.append("--use_watershed_count")
+    if settings.tiff_as_png_style:
+        args.append("--tiff_as_png_style")
+        if tiff_png_reference_dir is not None:
+            args.extend(["--tiff_png_reference_dir", str(tiff_png_reference_dir)])
+    if not settings.excel_enabled:
         args.append("--skip_excel")
-    if not histogram_enabled:
+    if not settings.histogram_enabled:
         args.append("--skip_histogram")
+    if settings.debug_preprocessed_match:
+        args.extend(["--debug_preprocessed_match", str(settings.debug_preprocessed_match)])
+    if settings.debug_preprocessed_dir:
+        args.extend(["--debug_preprocessed_dir", str(settings.debug_preprocessed_dir)])
     return args
 
 
@@ -85,25 +104,17 @@ def read_csv_rows(path: Path) -> list[dict[str, str]]:
 def prepare_run(
     *,
     folder_text: str,
-    ckpt_text: str,
     out_dir_text: str,
-    batch_value: int,
-    threshold_value: float,
-    min_area_value: int,
-    radius_value: int,
-    px_per_micron_value: float,
-    save_overlays: bool,
-    excel_enabled: bool,
-    histogram_enabled: bool,
+    settings: AppSettings,
+    current_slice_index: int,
 ) -> tuple[Path, list[str], Path]:
-    ckpt_path = Path(ckpt_text.strip())
+    ckpt_path = Path(settings.checkpoint_path)
     if not ckpt_path.is_file():
         raise ValueError("Checkpoint file does not exist.")
 
     base_out_dir = Path(out_dir_text.strip()) if out_dir_text.strip() else Path("quant_results")
     base_out_dir.mkdir(parents=True, exist_ok=True)
 
-    px_per_micron = px_per_micron_value if px_per_micron_value > 0 else None
     folder_path = Path(folder_text.strip())
     if not folder_path.is_dir():
         raise ValueError("Please select a valid input folder.")
@@ -116,16 +127,46 @@ def prepare_run(
 
     command = build_batch_command(
         input_dir=input_dir,
-        ckpt_path=ckpt_path,
         out_dir=out_dir,
-        batch_size=batch_value,
-        prob_thresh=threshold_value,
-        min_area=min_area_value,
-        background_radius=radius_value,
-        px_per_micron=px_per_micron,
-        save_overlays=save_overlays,
-        excel_enabled=excel_enabled,
-        histogram_enabled=histogram_enabled,
+        settings=settings,
+        current_slice_index=current_slice_index,
+        tiff_png_reference_dir=input_dir,
     )
 
     return folder_path, command, out_dir
+
+
+def prepare_single_image_run(
+    *,
+    image_path: Path,
+    out_dir_text: str,
+    settings: AppSettings,
+    current_slice_index: int,
+) -> tuple[Path, list[str], Path, Path]:
+    if not image_path.is_file():
+        raise ValueError("Please select a valid image file.")
+    if image_path.suffix.lower() not in VALID_EXTS:
+        raise ValueError("The selected file is not a supported image.")
+
+    ckpt_path = Path(settings.checkpoint_path)
+    if not ckpt_path.is_file():
+        raise ValueError("Checkpoint file does not exist.")
+
+    base_out_dir = Path(out_dir_text.strip()) if out_dir_text.strip() else Path("quant_results")
+    base_out_dir.mkdir(parents=True, exist_ok=True)
+
+    single_out_dir = base_out_dir / "single_runs" / image_path.stem
+    single_out_dir.mkdir(parents=True, exist_ok=True)
+
+    temp_input_dir = Path(tempfile.mkdtemp(prefix="segment_app_single_"))
+    staged_image = temp_input_dir / image_path.name
+    shutil.copy2(image_path, staged_image)
+
+    command = build_batch_command(
+        input_dir=temp_input_dir,
+        out_dir=single_out_dir,
+        settings=settings,
+        current_slice_index=current_slice_index,
+        tiff_png_reference_dir=image_path.parent if _is_tiff_path(image_path) else None,
+    )
+    return image_path, command, single_out_dir, temp_input_dir

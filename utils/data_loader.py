@@ -1,12 +1,35 @@
 # data_loader.py
 
 import os
+from pathlib import Path
+
 from PIL import Image
 import cv2
 import numpy as np
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
 from torch.utils.data import Dataset
+
+
+TRAIN_RESIZE_INTERPOLATION = cv2.INTER_LINEAR
+
+
+def _normalize_array_to_uint8(array):
+    array = np.asarray(array)
+    if array.dtype == np.uint8:
+        return array
+
+    if array.size == 0:
+        return np.zeros(array.shape, dtype=np.uint8)
+
+    array = array.astype(np.float32)
+    mn = float(np.min(array))
+    mx = float(np.max(array))
+    if mx - mn < 1e-8:
+        return np.zeros(array.shape, dtype=np.uint8)
+
+    normalized = (array - mn) / (mx - mn)
+    return (normalized * 255.0).clip(0, 255).astype(np.uint8)
 
 def rolling_ball_correction_rgb(image, radius=50):
     """
@@ -23,6 +46,49 @@ def rolling_ball_correction_rgb(image, radius=50):
     corrected_image = cv2.merge(corrected_channels)
     return corrected_image
 
+
+def ensure_training_rgb_uint8(image):
+    if isinstance(image, (str, os.PathLike, Path)):
+        with Image.open(image) as pil_image:
+            array = np.array(pil_image)
+    elif isinstance(image, Image.Image):
+        array = np.array(image)
+    else:
+        array = np.asarray(image)
+
+    array = _normalize_array_to_uint8(array)
+    if array.ndim == 2:
+        return np.array(Image.fromarray(array).convert("RGB"), dtype=np.uint8)
+
+    if array.ndim != 3:
+        raise ValueError(f"Unsupported image shape: {array.shape}")
+
+    if array.shape[-1] == 1:
+        return np.array(Image.fromarray(array[..., 0]).convert("RGB"), dtype=np.uint8)
+
+    if array.shape[-1] >= 3:
+        return np.array(Image.fromarray(array[..., :3]).convert("RGB"), dtype=np.uint8)
+
+    raise ValueError(f"Unsupported image shape: {array.shape}")
+
+
+def resize_like_training(image, size):
+    resize = A.Resize(
+        height=size,
+        width=size,
+        interpolation=TRAIN_RESIZE_INTERPOLATION,
+        mask_interpolation=cv2.INTER_NEAREST,
+    )
+    return resize(image=image)["image"]
+
+
+def preprocess_rgb_like_training(image, radius=50, size=512):
+    rgb = ensure_training_rgb_uint8(image)
+    corrected = rolling_ball_correction_rgb(rgb, radius=radius)
+    resized = resize_like_training(corrected, size=size)
+    normalized = resized.astype(np.float32) / 255.0
+    return normalized, rgb.shape[:2], corrected
+
 class SegmentationDataset(Dataset):
     def __init__(self, image_dir, mask_dir, image_list, mask_list, transform=None, return_filename=True, return_orig_size=True):
         self.image_dir = image_dir
@@ -31,7 +97,12 @@ class SegmentationDataset(Dataset):
         self.mask_list = mask_list
         self.transform = transform
         # Resize images and masks to 256x256 using Albumentations
-        self.resize = A.Resize(height=512, width=512)
+        self.resize = A.Resize(
+            height=512,
+            width=512,
+            interpolation=TRAIN_RESIZE_INTERPOLATION,
+            mask_interpolation=cv2.INTER_NEAREST,
+        )
         self.return_filename = return_filename
         self.return_orig_size = return_orig_size
 
@@ -43,7 +114,7 @@ class SegmentationDataset(Dataset):
         mask_path = os.path.join(self.mask_dir, self.mask_list[idx])
         
         # Load image and apply rolling ball correction
-        img = np.array(Image.open(img_path).convert("RGB"))
+        img = ensure_training_rgb_uint8(img_path)
         orig_h, orig_w = img.shape[:2]
         img = rolling_ball_correction_rgb(img, radius=50)
         
