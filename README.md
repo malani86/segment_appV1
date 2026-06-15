@@ -1,4 +1,4 @@
-# Lipid Droplet Segmentation Application
+# Lipid Droplet Segmentation Application(segment_appV1)
 
 A PySide6 desktop application for segmenting and quantifying lipid droplets in
 microscopy images using a UNetDC model.
