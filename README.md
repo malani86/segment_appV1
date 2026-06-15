@@ -85,6 +85,3 @@ size_histogram.png
 This project root includes an MIT license for original project files unless an
 individual file says otherwise.
 
-Before publishing, check whether you want to keep `segment_app/algorithms.py`.
-It appears unused by the current app and contains a BlobInspector GPL header, so
-remove it from the published project if you want a cleaner MIT-only release.
