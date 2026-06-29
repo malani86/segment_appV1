@@ -64,7 +64,15 @@ For TIFF stacks, useful options are:
 --tiff_mode all_slices
 --tiff_as_png_style
 ```
+for .exe
+```bash
+python -m PyInstaller --noconfirm --onefile --name quantify_droplets_batch.exe quantify_droplets_batch.py
 
+python -m PyInstaller --noconfirm --onefile --windowed \
+  --name segment_app \
+  --add-data "best_UNetDC_focal_model.pth:." \
+  main.py
+```
 ## Outputs
 
 The analysis creates files such as:
